@@ -1,1 +1,488 @@
+total_iter=10000
 
+
+density = matrix(0, nrow = n, ncol = total_iter)
+expval = matrix(0, nrow = n, ncol = total_iter)
+loglikelihood = numeric(total_iter)
+
+list_piparam = list()   #for X1
+
+list_muparam = list()   #for X2
+list_tau2param = list() #for X2
+
+list_alpha = list()     #for alpha
+
+list_beta_j = list()    #for Y
+list_sig2_j = list()    #for Y
+list_xi_j = list()      #for Y
+list_betat_j = list()    #for Y
+
+
+list_cl = list()
+W_paramFree = matrix(0, nrow = n, ncol = total_iter) 
+W_paramBase = list() 
+
+for (r in 1:total_iter) {
+  ###[1] Updating Cluster Membership -------------------------------------------
+  for (i in 1:n){
+    cluster_si = cl_membership                              #% current membership vector
+    
+    # a)remove obv and initialize...?
+    cluster_si[i] = 0                                  #% replace the membership value (the first obv) with "0"!
+    nj = as.numeric( table(cluster_si[cluster_si>0]) ) #% number of observations in each cluster without observation i
+    probs = numeric( length(nj)+1 )                    #% for P(s_i=j) ... it's c(31-1,41,28)?? so 3 + 1 ? total cluster number?
+    
+    # b)Iterate through each cluster and Calculate probability of staying the same: P(s_i=j)
+    x_i = c(1, X1[i], X2[i])                                        #% c(1, x1, x2)
+    if(is.na(X1[i])) {
+      if(Y[i]==1) {
+        for(j in 1:length(nj)) {
+          probs[j] = nj[j]/(n-1+alpha)*( (sigmoid( sum(c(x_i[1], 1, x_i[3])*betat_j[j,]) ))*piparam[j] + 
+                                          (sigmoid( sum(c(x_i[1], 0, x_i[3])*betat_j[j,]) ))*(1 - piparam[j]) )* # Y
+            dnorm(x = x_i[3], mean = muparam[j], sd = sqrt(tau2param[j])) # Covariate X2
+        } 
+      } else {
+        for(j in 1:length(nj)) {
+          probs[j] = nj[j]/(n-1+alpha)*((1-sigmoid( sum(c(x_i[1], 1, x_i[3])*betat_j[j,]) ))*       # P(Sh > 0) with NA
+                                          dlogsknorm( y=Y[i],                                 
+                                                      x=c(x_i[1], 1, x_i[3]), 
+                                                      beta=beta_j[j,], 
+                                                      sig2=sig2_j[j], 
+                                                      xi=xi_j[j] )*piparam[j] + 
+                                          (1-sigmoid( sum(c(x_i[1], 0, x_i[3])*betat_j[j,]) ))*
+                                          dlogsknorm( y=Y[i], 
+                                                      x=c(x_i[1], 0, x_i[3]), 
+                                                      beta=beta_j[j,], 
+                                                      sig2=sig2_j[j], 
+                                                      xi=xi_j[j])*(1 - piparam[j]))* # Y
+            dnorm(x = x_i[3], mean = muparam[j], sd = sqrt(tau2param[j])) # Covariate X2
+        }
+      }
+    } else {
+      if(Y[i]==1) {
+        for(j in 1:length(nj)) {
+          probs[j] = nj[j]/(n-1+alpha)*(sigmoid( sum(x_i*betat_j[j,]) ) )*
+            dbinom(x = x_i[2], size = 1, prob = piparam[j]) * # Covariate X1
+            dnorm(x = x_i[3], mean = muparam[j], sd = sqrt(tau2param[j]))
+        } 
+      } else {
+        for(j in 1:length(nj)) {
+          probs[j] = nj[j]/(n-1+alpha)*(1-sigmoid( sum(x_i*betat_j[j,]) ) )*
+            dlogsknorm(y=Y[i], x = x_i, beta = beta_j[j,], sig2 = sig2_j[j], xi = xi_j[j])* # Y
+            dbinom(x = x_i[2], size = 1, prob = piparam[j]) * # Covariate X1
+            dnorm(x = x_i[3], mean = muparam[j], sd = sqrt(tau2param[j])) # Covariate X2
+        }
+      }
+    }
+    
+    # c)After iteration through each cluster, Adding the new probability of "Forming a new cluster": P(s_i=J+1) 
+    probs[j+1] = alpha/(n-1+alpha)*f0y[i]*f0x[i]   #% so it gives...probs: c(prob, prob, prob, 0) -> c(prob, prob, prob, prob)
+    
+    # d)Finally, draw a new cluster for each datapoint from a multinomial distribution
+    newclust = which( rmultinom(n=1, size=1, prob=probs)==1 ) #% "which(.)" gives the indices of (logic=True)
+    cl_membership[i] = newclust                       #% assigning the cl_membership to each datapoint. WOW WOW WOW WOW ! 
+    #% "Multinomial(.)" is the way the datapt accept/reject the new cluster????
+    #% to face the truth, probabilities are: "probs/sum(probs)"
+    #% but.."rmultinom(.)" automatically addresses "probs"
+    
+    # e_1)If new cluster is selected by a certain data point, 
+    # then add new value (obtained from new cluster) to the existing parameter pool
+    if( length(cl_membership[cl_membership==cl_membership[i]]) == 1 ) {
+      #% for X1, append
+      if(!is.na(x_i[2])) {
+        piparam = c( piparam, 
+                     rbeta(n=1, shape1=c0+x_i[2], shape2=d0+1-x_i[2]) ) #posterior if no missing
+      } else {
+        piparam = c( piparam, 
+                     rbeta(n=1, shape1=c0, shape2=d0) ) #prior if missing binary covariate
+      }
+      #% for X2, append
+        tau2param = c( tau2param, 
+                       rinvgamma(n=1, shape=e0+1/2, scale=gam0+1/2*(1/2*(x_i[3]-mu0)^2)) )
+        muparam = c( muparam, 
+                     rnorm(n=1, mean=(x_i[3]+mu0)/2, sd=sqrt(tau2param[J+1]/2)) )
+      
+      
+        
+      beta_old_j = rmvn(n=1, mu=beta0, sigma=SIG_b0)
+      sig2_old_j = rinvgamma(n=1, shape=a0, scale=b0)
+      xi_old_j = rt(n=1, df=nu0) # imagine we already have them...old days..
+      betat_old_j = rmvn(n=1, mu=betat0, sigma=SIG_bt0)
+      
+      beta_p = rmvn(n=1, mu=beta0, sigma=SIG_b0)
+      sig2_p = rinvgamma(n=1, shape=a0, scale=b0)
+      xi_p = rt(n=1, df=nu0)
+      betat_p = rmvn(n=1, mu=betat0, sigma=SIG_bt0)
+      
+      if(is.na(x_i[2])) { #if X1 is missing, then impute
+        if (Y[i]>1) {
+          p0log = 
+            dlogsknorm_log(y=Y[i], 
+                           x=t(as.matrix(c(x_i[1], 0, x_i[3]), nrow=1)), 
+                           beta=t(beta_old_j), 
+                           sig2=sig2_old_j, 
+                           xi=xi_old_j) + 
+            dbinom(x=0, size=1, piparam[J+1], log=TRUE) + 
+            log( 1-sigmoid( sum(c(x_i[1], 0, x_i[3])*betat_old_j) ) )
+          
+          p1log = 
+            dlogsknorm_log(y=Y[i], 
+                           x=t(as.matrix(c(x_i[1], 1, x_i[3]), nrow=1)), 
+                           beta=t(beta_old_j), 
+                           sig2=sig2_old_j, 
+                           xi=xi_old_j) + 
+            dbinom(x=1, size=1, piparam[J+1], log=TRUE) + 
+            log( 1-sigmoid( sum(c(x_i[1], 1, x_i[3])*betat_old_j) ) )
+        }
+        else {
+          p0log = 
+            dbinom(x=0, size=1, piparam[J+1], log=TRUE) + # (1 - pi_j)
+            log( sigmoid( sum(c(x_i[1], 0, x_i[3])*betat_old_j) ) )
+          
+          p1log = 
+            dbinom(x=1, size=1, piparam[j], log=TRUE) + # (pi_j)
+            log( sigmoid( sum(c(x_i[1], 1, x_i[3])*betat_old_j) ) )
+        }
+        
+        # Let's impute!!!
+        x_i[2] = rbinom(n = 1, size = 1, prob = 1/(1+exp(p0log-p1log))) #imputing NA with using posterior Pi 
+      }  
+      
+      
+      
+      # > MH algorithm
+      # prepare components
+      
+      if(Y[i]>1){
+        numerator =
+          log( 1-sigmoid(sum(x_i*betat_p)) ) + 
+            dlogsknorm_log(Y[i], x_i, t(as.matrix(beta_p)), sig2_p, xi_p)
+          denominator = 
+            log( 1-sigmoid(sum(x_i*betat_old_j)) ) + 
+            dlogsknorm_log(Y[i], x_i, t(as.matrix(beta_old_j)), sig2_old_j, xi_old_j)
+        } else {
+          numerator = 
+            log( sigmoid(sum(x_i*betat_p)) ) 
+          denominator = denominator + 
+            log( sigmoid(sum(x_i*betat_old_j)) )  
+        }
+      # compute the ratio
+      ratio = min(exp(numerator-denominator), 1)
+      
+      U = runif(n = 1, min = 0, max = 1)
+      if(U < ratio) {
+        beta_j = rbind(beta_j,beta_p)
+        sig2_j = c(sig2_j,sig2_p)
+        xi_j = c(xi_j,xi_p)
+        betat_j = rbind(betat_j,betat_p)
+      } else {
+        beta_j = rbind(beta_j,beta_old_j)
+        sig2_j = c(sig2_j,sig2_old_j)
+        xi_j = c(xi_j,xi_old_j)
+        betat_j = rbind(betat_j,betat_old_j)
+      }
+      
+      J = J+1
+    }
+    
+    # e_2)If cluster removed then need to remove parameters and renumber clusters
+    if( sum(diff(as.numeric(names(table(cl_membership)))) - 1) > 0 ) {               #% ????????
+      #% for ..??
+      j = which( (diff(as.numeric( names(table(cl_membership)) )) - 1) > 0 ) + 1     #% ????????
+      cl_membership[cl_membership>=j] = cl_membership[cl_membership>=j] - 1          #% ????????
+      
+      #% for X1
+      piparam = piparam[-j]
+      #% for X2
+      tau2param = tau2param[-j]
+      muparam = muparam[-j]
+      #% for Y
+      sig2_j = sig2_j[-j]
+      beta_j = beta_j[-j,]
+      xi_j = xi_j[-j]
+      betat_j = betat_j[-j,]
+      
+      J = J-1
+    }
+  }
+  J = length(unique(cl_membership))                  #% in case, cluster scenario changes, reflecting them
+  
+  
+  ###[2] Updating Posterior ----------------------------------------------------
+  #% for X1
+  piparam = numeric(J)
+  for (j in 1:J) {
+    Xj=X1[cl_membership==j & !X1miss]
+    nj=length(Xj)
+    if(nj > 0) {
+      piparam[j]=rbeta( n=1, shape1=c0+sum(Xj), shape2=d0+nj-sum(Xj) ) #posterior
+    } else {
+      piparam[j] = rbeta(n=1, shape1 = c0, shape2 = d0) #prior if all observation missing binary covariates
+    }
+  }
+  
+  #piparam #% pi parameter sampled from Beta(c0, d0) ?
+  #% for X2
+  muparam = numeric(J)
+  tau2param = numeric(J)
+  for (j in 1:J) {
+    Xj=X2[cl_membership==j]
+    nj=length(Xj)
+    
+    if(nj >0) { # sample from the posterior
+      Xjbar=mean(Xj)
+      tau2param[j]=rinvgamma( n=1, shape=e0+nj/2, scale=gam0+0.5*( nj*(Xjbar-mu0)^2/(nj+1) + sum((Xj-Xjbar)^2) ) )
+      muparam[j]=rnorm( n=1, mean=(nj*Xjbar+mu0)/(nj+1), sd=sqrt(tau2param[j]/(nj+1)) )                       #% tau0 is not used???
+    } else { # sample from the prior if all missing continuous covariate
+      tau2param[j] = rinvgamma(n=1, shape = e0, scale = gam0)
+      muparam[j]=rnorm(n=1, mean=mu0, sd = sqrt(tau2param[j]))
+    }
+  }
+  
+  
+  #muparam
+  #tau2param
+  
+  #% for alpha
+  eta = rbeta(n = 1, shape1 = alpha+1, shape2 = n)
+  pi_eta = (g0+J-1)/(g0+J-1+n*(h0-log(eta)))
+  alpha = pi_eta*rgamma(n = 1, shape = g0+J, rate = h0-log(eta)) + (1-pi_eta)*rgamma(n = 1, shape = g0+J-1, rate = h0-log(eta))
+  
+  #% for Y
+  beta_old = beta_j
+  sig2_old = sig2_j
+  xi_old = xi_j
+  betat_old = betat_j
+  
+  
+  for(j in 1:J) {
+    # Sample proposals from priors
+    beta_p = rmvn(n=1, mu=beta0, sigma=SIG_b0)
+    sig2_p = rinvgamma(n=1, shape=a0, scale=b0)
+    xi_p = rt(n=1, df=nu0)
+    betat_p = rmvn(n=1, mu=betat0, sigma=SIG_bt0)
+    
+    # subsetting by cluster
+    Yj = Y[cl_membership==j]
+    if(length(Yj)==1) {
+      matXj = matrix(matX[cl_membership==j, ],nrow=1)
+    } else {
+      matXj = matX[cl_membership==j, ]
+    }
+    X1missj = X1miss[cl_membership==j]
+    missindx = which(X1missj)
+    
+    # > In case: there is any NA.....in X1, Finish Imputation X1 beforehand....
+    # p0: joint where x1 = 0
+    # p1: joint where x1 = 1
+    for(i in missindx) {
+      if (Yj[i]>1) {
+        p0log = 
+          dlogsknorm_log(y=Yj[i], 
+                         x=t(as.matrix(c(matXj[i,1], 0, matXj[i,3]), nrow=1)), 
+                         beta=beta_old[j,], 
+                         sig2=sig2_old[j], 
+                         xi=xi_old[j]) + 
+          dbinom(x=0, size=1, piparam[j], log=TRUE) + 
+          log( 1-sigmoid( sum(c(matXj[i,1], 0, matXj[i,3])*betat_old[j, ]) ) )
+        
+        p1log = 
+          dlogsknorm_log(Yj[i], 
+                         x=t(as.matrix(c(matXj[i,1], 1, matXj[i,3]), nrow=1)), 
+                         beta=beta_old[j,], 
+                         sig2=sig2_old[j], 
+                         xi=xi_old[j]) + 
+          dbinom(x=1, size=1, piparam[j], log=TRUE) + 
+          log( 1-sigmoid( sum(c(matXj[i,1], 1, matXj[i,3])*betat_old[j, ]) ) )
+      }
+      else {
+        p0log = 
+          dbinom(x=0, size=1, piparam[j], log=TRUE) + # (1 - pi_j)
+          log( sigmoid( sum(c(matXj[i,1], 0, matXj[i,3])*betat_old[j, ]) ) )
+        
+        p1log = 
+          dbinom(x=1, size=1, piparam[j], log=TRUE) + # (pi_j)
+          log( sigmoid( sum(c(matXj[i,1], 1, matXj[i,3])*betat_old[j, ]) ) )
+      }
+      
+      # Let's impute!!!
+      matXj[i,2] = rbinom(n = 1, size = 1, prob = 1/(1+exp(p0log-p1log))) #imputing NA with using posterior Pi 
+    }
+    # if there is no NA...we don't need any imputation...obviously...     :::::: Imputation Done! ::::::
+    
+    # > MH algorithm
+    # prepare components
+    numerator=0
+    denominator=0
+    for (i in 1:length(Yj)){
+      if(Yj[i]>1){
+        numerator = numerator + 
+          log( 1-sigmoid(sum(matXj[i,]*betat_p)) ) + 
+          dlogsknorm_log(Yj[i], matXj[i,], t(as.matrix(beta_p)), sig2_p, xi_p)
+        denominator = denominator + 
+          log( 1-sigmoid(sum(matXj[i,]*betat_old[j,])) ) + 
+          dlogsknorm_log(Yj[i], matXj[i,], t(as.matrix(beta_old[j,])), sig2_old[j], xi_old[j])
+      }
+      else {
+        numerator = numerator + 
+          log( sigmoid(sum(matXj[i,]*betat_p)) ) 
+        denominator = denominator + 
+          log( sigmoid(sum(matXj[i,]*betat_old[j,])) )  
+      }
+    }
+    # compute the ratio
+    ratio = min(exp(numerator-denominator), 1)
+    
+    U = runif(n = 1, min = 0, max = 1)
+    if(U < ratio) {
+      beta_j[j, ] = beta_p
+      sig2_j[j] = sig2_p
+      xi_j[j] = xi_p
+      betat_j[j, ] = betat_p
+    } else {
+      beta_j[j, ] = beta_old[j, ]
+      sig2_j[j] = sig2_old[j]
+      xi_j[j] = xi_old[j]
+      betat_j[j, ] = betat_old[j, ]
+    }
+  }
+  
+  
+
+  
+  ###[3] Calculating Loglikelihood ---------------------------------------------
+  loglike_r = 0
+  
+  for(i in 1:n) {
+    x_i = matX[i, ]
+    j = cl_membership[i]
+    
+    if(!is.na(x_i[2])) {
+      if(Y[i] > 1) {
+        loglike_r = loglike_r +                                                     #% why ???
+          dlogsknorm_log(y = Y[i], x = x_i, beta = beta_j[j,], sig2 = sig2_j[j], xi = xi_j[j]) +
+          log(1-sigmoid(sum(x_i*betat_j[j,]))) +
+          dbinom(x = x_i[2], size = 1, prob = piparam[j], log = TRUE) + 
+          dnorm(x = x_i[3], mean = muparam[j], sd = sqrt(tau2param[j]), log = TRUE)
+      } else {
+        loglike_r = loglike_r +                                                     #% why ???
+          log(sigmoid(sum(x_i*betat_j[j,]))) +
+          dbinom(x = x_i[2], size = 1, prob = piparam[j], log = TRUE) + 
+          dnorm(x = x_i[3], mean = muparam[j], sd = sqrt(tau2param[j]), log = TRUE)
+      }
+    } else { # missing binary covariate
+      if(Y[i] > 1) {
+        loglike_r = loglike_r +                                                     #% why ???
+          log( dlogsknorm(y = Y[i], x = c(x_i[1],1,x_i[3]), beta = beta_j[j,], sig2 = sig2_j[j], xi = xi_j[j])*
+                (1-sigmoid(sum(c(x_i[1],1,x_i[3])*betat_j[j,])))*dbinom(x = 1, size =1, prob = piparam[j]) +
+                dlogsknorm(y = Y[i], x = c(x_i[1],0,x_i[3]), beta = beta_j[j,], sig2 = sig2_j[j], xi = xi_j[j])*
+                (1-sigmoid(sum(c(x_i[1],0,x_i[3])*betat_j[j,])))*dbinom(x = 0, size =1, prob = piparam[j]) )+
+          dnorm(x = x_i[3], mean = muparam[j], sd = sqrt(tau2param[j]), log = TRUE)
+      } else {
+        loglike_r = loglike_r +                                                     #% why ???
+          log( (sigmoid(sum(c(x_i[1],1,x_i[3])*betat_j[j,])))*dbinom(x = 1, size =1, prob = piparam[j]) +
+                 (sigmoid(sum(c(x_i[1],0,x_i[3])*betat_j[j,])))*dbinom(x = 0, size =1, prob = piparam[j]) )+
+          dnorm(x = x_i[3], mean = muparam[j], sd = sqrt(tau2param[j]), log = TRUE)
+      }
+    }
+    #print(loglike_r)
+  }
+  loglikelihood[r] = loglike_r
+  
+  
+  
+  
+  ###[4] Calculate Predictive Distribution -------------------------------------
+  #% cl_membership
+  list_cl[[r]] = cl_membership
+  #% for X1
+  list_piparam[[r]] = piparam
+  #% for X2
+  list_muparam[[r]] = muparam
+  list_tau2param[[r]] = tau2param
+  #% for alpha
+  list_alpha[[r]] = alpha
+  #% for Y
+  list_beta_j[[r]] = beta_j
+  list_sig2_j[[r]] = sig2_j
+  list_xi_j[[r]] = xi_j
+  list_betat_j[[r]] = betat_j
+  
+  #% outcome density
+  outcome = numeric(J)
+  #% weight
+  W_paramBase_matrix = matrix(0, nrow = n, ncol = J)
+  
+  #% for weight(local) w.r.t each datapt
+  for(i in 1:n) {
+    x_i = matX[i,]
+    w_j = numeric(J)
+    w_paramBase = numeric(J)
+    E_outvalue = numeric(J)
+    for(j in 1:J) {
+      
+      if(!is.na(x_i[2])) {
+        w_j[j] = dbinom(x=x_i[2], size=1, prob=piparam[j])*dnorm(x=x_i[3], mean=muparam[j], sd=sqrt(tau2param[j]))
+      } 
+      else {
+        w_j[j] = dnorm(x=x_i[3], mean=muparam[j], sd=sqrt(tau2param[j]))
+      }
+      w_paramBase[j] = length(Y[cl_membership==j])/(alpha+n)*w_j[j]
+      
+      
+      
+      if(is.na(x_i[2])) {
+        if(Y[i]==1) {                                                           # P(Sh = 0) with NA
+          outcome[j] = ( (sigmoid( sum(c(x_i[1], 1, x_i[3])*betat_j[j,]) ))*piparam[j] + 
+                                             (sigmoid( sum(c(x_i[1], 0, x_i[3])*betat_j[j,]) ))*(1 - piparam[j]) ) # Y
+        } 
+        else {                                                                  # P(Sh > 0) with NA
+          outcome[j] = ((1-sigmoid( sum(c(x_i[1], 1, x_i[3])*betat_j[j,]) ))*       
+                                            dlogsknorm( y=Y[i],                                 
+                                                        x=c(x_i[1], 1, x_i[3]), 
+                                                        beta=beta_j[j,], 
+                                                        sig2=sig2_j[j], 
+                                                        xi=xi_j[j] )*piparam[j] +
+                       (1-sigmoid( sum(c(x_i[1], 0, x_i[3])*betat_j[j,]) ))*
+                                            dlogsknorm( y=Y[i], 
+                                                        x=c(x_i[1], 0, x_i[3]), 
+                                                        beta=beta_j[j,], 
+                                                        sig2=sig2_j[j], 
+                                                        xi=xi_j[j])*(1 - piparam[j])) # Y only
+        }
+        E_outvalue[j] = (1-sigmoid( sum(c(x_i[1], 1, x_i[3])*betat_j[j,]) ))*
+            2*exp(sum(c(x_i[1], 1, x_i[3])*beta_j[j,]) + sig2_j[j]/2)*(1-pnorm(-xi_j[j]*sqrt(sig2_j[j])/sqrt(xi_j[j]^2+1)))*piparam[j] +
+            (1-sigmoid( sum(c(x_i[1], 0, x_i[3])*betat_j[j,]) ))*
+            2*exp(sum(c(x_i[1], 0, x_i[3])*beta_j[j,]) + sig2_j[j]/2)*(1-pnorm(-xi_j[j]*sqrt(sig2_j[j])/sqrt(xi_j[j]^2+1)))*(1-piparam[j]) 
+      } 
+      else {
+        if(Y[i]==1) {
+          outcome[j] = (sigmoid( sum(x_i*betat_j[j,]) ) ) # Y
+        } 
+        else {
+          outcome[j] = (1-sigmoid( sum(x_i*betat_j[j,]) ) )*
+              dlogsknorm(y=Y[i], x = x_i, beta = beta_j[j,], sig2 = sig2_j[j], xi = xi_j[j]) # Y
+        }
+        E_outvalue[j] = (1-sigmoid( sum(x_i*betat_j[j,]) ))*
+          2*exp(sum(x_i*beta_j[j,]) + sig2_j[j]/2)*(1-pnorm(-xi_j[j]*sqrt(sig2_j[j])/sqrt(xi_j[j]^2+1)))
+      }
+      
+    }
+    w_J1 = f0x[i]
+    w_paramFree = w_J1*alpha/(alpha+n)
+    
+    wJ1 = w_paramFree #;print(wJ1)
+    
+    #% for weight(global) w.r.t each iteration
+    W_paramFree[i,r] = wJ1/(wJ1+sum(w_paramBase))
+    W_paramBase_matrix[i,] = w_paramBase/(wJ1+sum(w_paramBase)) 
+    
+    density[i,r] = W_paramFree[i,r]*f0y[i] + sum(W_paramBase_matrix[i,]*outcome)
+    #print(density)
+
+    expval[i,r] = W_paramFree[i,r]*E0y[i] + sum(W_paramBase_matrix[i,]*E_outvalue)
+    #print(expval)
+    
+    print(r) #% iteration progress
+  }
+}
