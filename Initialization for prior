@@ -1,1 +1,270 @@
+# ::::::: # -------------- PRIOR ------------------ # ::: for Y~LSN( x*"beta", sd(Y), xi )
+#                                                     ::: for Y~delta( x*"beta_tilde" )
+#-------------------------------------------------------------------------------
+# ------------- Outcome -- ( beta_j, sig2_j, xi_j, betat_j ) -------------------
+# Gaussian regression for initialize OUTCOME model parameter beta0, SIG0
+fit1 <- glm( log(Y[!train.df$Zero]) ~ factor(X1[!train.df$Zero]) + X2[!train.df$Zero] ) 
+summary(fit1)
+
+fit1$fitted.value
+hist(fit1$fitted.values)
+predict.glm(fit1, type="response")
+hist(predict.glm(fit1, type="response")) 
+#boxplot(fit1$fitted.value ~ train.df$Zero[!is.na(train.df$protectmiss)]) # F:(Sh>0), T:(Sh=0) excluding NA
+# Note that the predicted value in a GLM is a mean. For any distribution on non-negative values, to predict a mean 
+#of 0, its distribution would have to be entirely a spike at 0.
+
+
+# ::: for "tilde_bj"~MVN( betat0, SIG_bt0 ): keep beta0, SIG_b0 from coefficient for logistic glm to handle zero
+betat0 = coef(fit_w)
+SIG_bt0 = vcov(fit_w)
+SIG_bt0inv = solve(a=SIG_bt0)
+
+# ::: for "beta_j"~MVN( beta0, sig2_j*SIG_b0 ): keep beta0, SIG_b0, but sample sig2_j
+a0 = 1    # ::: for "sig2_j" ~[ IG(a0, b0) ]  
+b0 = 1    
+
+beta0 = coef(fit1)          # 1x3 initial reg_coeff vector (sort of "means"): Regression result as "mean"
+SIG_b0 = vcov(fit1)         # 3x3 initial cov matrix of reg_coeff
+SIG_b0inv = solve(a=SIG_b0) # inverse of cov matrix of reg_coeff for later use (for posterior on reg_coeff)!!
+
+# ::: for "xi_j"~t(loc, nu0, sca)
+loc = 0   # ? Location hyperparameter for T distribution
+nu0 = 1/2 # df for T distribution on pigtail parameter
+sca = 5   # ? Scale hyperparameter for T distribution 
+
+
+#-------------------------------------------------------------------------------
+# ------------ Covariates -- ( "prop_j", "mu_j", "tau2_j" ) --------------------
+c0 = 0.5  # Main-param: "prop_j" ~[ Beta(c0, d0) ]     ::: for X1~Bin( n, "prob_j" )
+d0 = 0.5   
+
+mu0 = 0   # Main-param: "mu_j" ~[ N(mu0, tau0) ]       ::: for X2~N( "mu_j", tau2_j ) 
+tau0 = 1  
+
+e0 = 1    # Main-param: "tau2_j" ~[ IG(e0, gam0) ]      ::: for X2~N( mu_j, "tau2_j" )
+gam0 = 1    
+
+# -- precision -- "alpha"
+g0 = 1    #                                          ::: for "alpha"~Ga( g0, h0 )
+h0 = 1    
+
+
+
+
+
+
+################################################################################
+### Step01> initialize cluster membership - Hierarchical clustering
+################################################################################
+J=3
+clusters = cutree(hclust( dist(cbind(log(Y),X1,X2)) ), J)
+cl_membership = clusters 
+table(cl_membership)
+
+plot( hclust(dist(cbind(log(Y),X1,X2))) )
+rect.hclust(hclust(dist(cbind(log(Y),X1,X2))) , k = 3, border = 2:6)
+abline(h = 3, col = 'red')
+
+# library(dendextend)
+# avg_dend_obj <- as.dendrogram( hclust(dist(cbind(log(Y),X1,X2))) )
+# avg_col_dend <- color_branches(avg_dend_obj, h = 3)
+# plot(avg_col_dend)
+# 
+# library(dplyr)
+# df_cl <- mutate(.data=train.df, cluster=clusters)
+# count(df_cl, cluster) # count how many observations were assigned to each cluster ?
+# library(ggplot2)
+# ggplot(df_cl, aes(x=ln_coverage, y = log(loss), color = factor(cluster))) + geom_point()
+
+
+
+
+
+
+
+################################################################################
+### Step02> initialize cluster parametersssss 
+#           Sample some parameters, using your POSTERIOR
+#                                         Based on hierarchical clustering: J=3
+################################################################################
+
+# ------------------------ for Covariates + alpha ------------------------------
+
+##[A] for X1~Bin( n, "prob_j" ) .. starting with 3 clusters for beta POSTERIOR
+set.seed(1)
+
+piparam = numeric(J)
+for (j in 1:J) {
+  Xj=X1[cl_membership==j & !X1miss]
+  nj=length(Xj)
+  if(nj > 0) { #sample from posterior
+    piparam[j] = rbeta( n=1, shape1=c0+sum(Xj), shape2=d0+nj-sum(Xj) ) 
+  } 
+  else { #sample from prior
+    piparam[j] = rbeta(n=1, shape1 = c0, shape2 = d0)                  
+  }
+}
+piparam #% pi parameter sampled from posterior
+
+#% [Check!] empirical pi ? using "aggregate(.)": investigation by splitting the data into subset
+pi_empirical = aggregate(x=X1, by=list(cl_membership), FUN=mean, na.rm= T)$x; pi_empirical
+piparam - pi_empirical 
+
+
+##[B] for X2~N( "mu_j", "tau2_j" ) .. starting with 3 clusters for Normal/IG POSTERIOR
+muparam = numeric(J); muparam
+tau2param = numeric(J); tau2param
+for (j in 1:J) {
+  Xj=X2[cl_membership==j]
+  nj=length(Xj)
+  if(nj >0) { # sample from the posterior
+    Xjbar=mean(Xj)
+    tau2param[j]=rinvgamma( n=1, shape=e0+nj/2, scale=gam0+0.5*( nj*(Xjbar-mu0)^2/(nj+1) + sum((Xj-Xjbar)^2) ) )
+    muparam[j]=rnorm( n=1, mean=(nj*Xjbar+mu0)/(nj+1), sd=sqrt(tau2param[j]/(nj+1)) )     
+  }
+  else { # sample from the prior
+    tau2param[j] = rinvgamma(n=1, shape = e0, scale = gam0)
+    muparam[j]=rnorm(n=1, mean=mu0, sd = sqrt(tau2param[j]))
+  }
+}
+muparam
+tau2param
+
+#% [Check!] empirical mu, sigma ? using "aggregate(.)": investigation by splitting the data into subset
+mu_empirical = aggregate(x=as.numeric(X2), by=list(cl_membership), FUN=mean, na.rm=T)$x; mu_empirical
+tau2_empirical = aggregate(x=as.numeric(X2), by=list(cl_membership), FUN=var, na.rm=T)$x; tau2_empirical
+
+
+##[C] for alpha~Ga( shape=g0, rate=h0 ) .. starting with 3 clusters for Mixed Gamma POSTERIOR
+alpha0=2 # initialization: typically..1,2...
+eta = rbeta(n=1, shape1=alpha0+1, shape2=n); eta
+pi_eta = (g0+J-1)/(g0+J-1+n*(h0-log(eta))); pi_eta
+
+# precision parameters and its done!
+alpha = pi_eta*rgamma( n=1, shape=g0+J, 
+                       rate=h0-log(eta) ) + (1-pi_eta)*rgamma(n=1, shape=g0+J-1, rate=h0-log(eta) ); alpha
+
+
+
+
+
+
+
+# ---------------------------- for Outcome -------------------------------------
+
+##[D] Outcome parameters:  beta_j, sig2_j, xi_j, betat_j 
+
+# No conjugacy...so prepare MM sampling
+# This is where new parameters go.
+beta_j = matrix(data=NA, nrow=J, ncol=length(beta0)) 
+sig2_j = numeric(J) 
+xi_j = numeric(J)
+betat_j = matrix(data=NA, nrow=J, ncol=length(betat0))
+
+# Set in place the old parameters..sample from prior...
+beta_old = matrix( rep(rmvn(n=1, mu=beta0, sigma=SIG_b0), J), nrow=J, byrow= TRUE ) #conflict with "mgcv"
+sig2_old = rep(rinvgamma(n=1, shape=a0, scale=b0), J)
+xi_old = rep(rt(n=1, df=nu0), J) # imagine we already have them...old days..
+betat_old = matrix( rep(rmvn(n=1, mu=betat0, sigma=SIG_bt0), J), nrow=J, byrow= TRUE )
+
+
+#### Metropolis Hastings to update beta_j, sig2_j, xi_j, beta_j
+for(j in 1:J) {
+  # Sample proposals from priors
+  beta_p = rmvn(n=1, mu=beta0, sigma=SIG_b0)
+  sig2_p = rinvgamma(n=1, shape=a0, scale=b0)
+  xi_p = rt(n=1, df=nu0)
+  betat_p = rmvn(n=1, mu=betat0, sigma=SIG_bt0)
+  
+  # subsetting by cluster
+  Yj = Y[cl_membership==j]
+  matXj = matX[cl_membership==j, ]
+  X1missj = X1miss[cl_membership==j]
+  missindx = which(X1missj)
+  
+  # > In case: there is any NA.....in X1, Finish Imputation X1 beforehand....
+  # p0: joint where x1 = 0
+  # p1: joint where x1 = 1
+  for(i in missindx) {
+    if (Yj[i]>1) {
+      p0log = 
+        dlogsknorm_log(y=Yj[i], 
+                       x=t(as.matrix(c(matXj[i,1], 0, matXj[i,3]), nrow=1)), 
+                       beta=beta_old[j,], 
+                       sig2=sig2_old[j], 
+                       xi=xi_old[j]) + 
+        dbinom(x=0, size=1, piparam[j], log=TRUE) + 
+        log( 1-sigmoid( sum(c(matXj[i,1], 0, matXj[i,3])*betat_old[j, ]) ) )
+      
+      p1log = 
+        dlogsknorm_log(Yj[i], 
+                       x=t(as.matrix(c(matXj[i,1], 1, matXj[i,3]), nrow=1)), 
+                       beta=beta_old[j,], 
+                       sig2=sig2_old[j], 
+                       xi=xi_old[j]) + 
+        dbinom(x=1, size=1, piparam[j], log=TRUE) + 
+        log( 1-sigmoid( sum(c(matXj[i,1], 1, matXj[i,3])*betat_old[j, ]) ) )
+    }
+    else {
+      p0log = 
+        dbinom(x=0, size=1, piparam[j], log=TRUE) + # (1 - pi_j)
+        log( sigmoid( sum(c(matXj[i,1], 0, matXj[i,3])*betat_old[j, ]) ) )
+      
+      p1log = 
+        dbinom(x=1, size=1, piparam[j], log=TRUE) + # (pi_j)
+        log( sigmoid( sum(c(matXj[i,1], 1, matXj[i,3])*betat_old[j, ]) ) )
+    }
+    
+    # Let's impute!!!
+    matXj[i,2] = rbinom(n = 1, size = 1, prob = 1/(1+exp(p0log-p1log))) #imputing NA with using posterior Pi 
+  }
+  # if there is no NA...we don't need any imputation...obviously...     :::::: Imputation Done! ::::::
+  
+  # > MH algorithm
+  # prepare components
+  numerator=0
+  denominator=0
+  for (i in 1:length(Yj)){
+    if(Yj[i]>1){
+      numerator = numerator + 
+        log( 1-sigmoid(sum(matXj[i,]*betat_p)) ) + 
+        dlogsknorm_log(Yj[i], matXj[i,], t(as.matrix(beta_p)), sig2_p, xi_p)
+      denominator = denominator + 
+        log( 1-sigmoid(sum(matXj[i,]*betat_old[j,])) ) + 
+        dlogsknorm_log(Yj[i], matXj[i,], t(as.matrix(beta_old[j,])), sig2_old[j], xi_old[j])
+    }
+    else {
+      numerator = numerator + 
+        log( sigmoid(sum(matXj[i,]*betat_p)) ) 
+      denominator = denominator + 
+        log( sigmoid(sum(matXj[i,]*betat_old[j,])) )  
+    }
+  }
+  # compute the ratio
+  ratio = min(exp(numerator-denominator), 1)
+  
+  U = runif(n = 1, min = 0, max = 1)
+  if(U < ratio) {
+    beta_j[j, ] = beta_p
+    sig2_j[j] = sig2_p
+    xi_j[j] = xi_p
+    betat_j[j, ] = betat_p
+  } 
+  else {
+    beta_j[j, ] = beta_old[j, ]
+    sig2_j[j] = sig2_old[j]
+    xi_j[j] = xi_old[j]
+    betat_j[j, ] = betat_old[j, ]
+  }
+}
+
+beta_j   #(J,p) : membership(J), predictors(p)
+beta_old #(J,p)
+sig2_j   #(J)
+sig2_old #(J)
+xi_j     #(J)
+xi_old   #(J)
+betat_j  #(J,p)
+betat_old#(J,p)
 
