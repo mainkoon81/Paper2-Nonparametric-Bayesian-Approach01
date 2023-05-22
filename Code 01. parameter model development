@@ -4,8 +4,6 @@
 # ------------- Outcome -- ( beta_j, sig2_j, xi_j, betat_j ) -------------------
 # Gaussian regression for initialize OUTCOME model parameter beta0, SIG0
 fit1 <- glm( log(Y[!train.df$Zero]) ~ factor(X1[!train.df$Zero]) + X2[!train.df$Zero] ) 
-summary(fit1)
-
 fit1$fitted.value
 hist(fit1$fitted.values)
 predict.glm(fit1, type="response")
@@ -22,7 +20,7 @@ SIG_bt0inv = solve(a=SIG_bt0)
 
 # ::: for "beta_j"~MVN( beta0, sig2_j*SIG_b0 ): keep beta0, SIG_b0, but sample sig2_j
 a0 = 1    # ::: for "sig2_j" ~[ IG(a0, b0) ]  
-b0 = 1    
+b0 = 0.25    
 
 beta0 = coef(fit1)          # 1x3 initial reg_coeff vector (sort of "means"): Regression result as "mean"
 SIG_b0 = vcov(fit1)         # 3x3 initial cov matrix of reg_coeff
