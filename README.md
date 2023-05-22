@@ -1,8 +1,5 @@
-# A. SP7
-### Insurance Products (background and types)
-
-#### A.
-
+# The Second Experiment
+### title: Dirichlet Process Log Skew-normal Mixture with Missing at Random Covariate in Insurance Claim Analysis
 
 
 
