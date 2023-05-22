@@ -1,1 +1,160 @@
+### [discrete Data model]
+#
+# covariate w/o NA: ----------> X1,X2
+#-> dbinom(x, size, prob=piparam)*dnorm(x, mean=muparam, sd=tau2param)
+# covariate with NA in X1: ---> X2
+#-> dnorm(x, mean=muparam, sd=tau2param)
+
+
+
+# Outcome w/o NA: ------------> Sh|X1,X2
+#-> dlogsknorm_log(y, x, beta=beta_j, sig2=sig2_j, xi=xi_j)
+# outcome with NA: -----------> Sh|X1,X2 then marginalize w.r.t X1
+#-> dlogsknorm_log(y, x, beta=beta_j, sig2=sig2_j, xi=xi_j)
+
+
+
+### [continuous (Parameter-free) Data model]
+#
+# covariate model w/o NA: ----------> int X1,X2 w.r.t "piparam","muparam","tau2param"
+f0x1 = function(x1) {
+  beta(x1+c0, 1-x1+d0)/beta(c0,d0)
+}
+f0x2 = function(x2) {
+  gam0^e0*gamma(e0+1/2)/(2*sqrt(pi)*gamma(e0))*(gam0+(x2-mu0)^2/4)^(-(e0+1/2))
+}
+#::: f0x = f0x1(X1)*f0x2(X2)
+
+
+# covariate model with NA in X1: ---> int X2 w.r.t "muparam","tau2param" 
+f0x2 = function(x2) {
+  gam0^e0*gamma(e0+1/2)/(2*sqrt(pi)*gamma(e0))*(gam0+(x2-mu0)^2/4)^(-(e0+1/2))
+}
+#::: f0x = f0x2
+
+
+
+
+# Outcome ...with+w/o NA: ------------------------------> MonteCarlo Integration
+# Calculate Outcome and Covariate parameter free data model for each observation  
+n=length(Y)
+f0y = numeric(n) #% param-free outcome model f0(y|x)
+f0x = numeric(n) #% param-free covariate model
+E0y = numeric(n) #% param-free E(Y|x) = Expected value of Y|x ~ f0(y|x)
+
+M = 1000 # Number of Monte Carlo samples
+sumy = numeric(M)
+sumEy = numeric(M)
+for(i in 1:n) {
+  if(!is.na(X1[i])) { # --------------------------------------------------------- # [ When no NA in X1 ] #
+    f0x[i] = f0x1(X1[i])*f0x2(X2[i])  #### Look at your covariate model #####
+    
+    # Monte Carlo integration for Y (w/o NA) for ### outcome model ###
+    #sumy = numeric(M)
+    #sumEy = numeric(M)
+    for(j in 1:M) {
+      xi_samplej = rt(n = 1, df = nu0)                            # prior on xi
+      sig_samplej = rinvgamma(n = 1, shape = a0, scale = b0)      # prior on sig2
+      beta_samplej = rmvn(n = 1, mu = beta0, sigma = SIG_b0)      # prior on beta
+      betat_samplej = rmvn(n = 1, mu = betat0, sigma = SIG_bt0)   # prior on tilde beta
+      
+      if(Y[i]>1){                                                               # Y>1, when Sh>0
+        sumy[j] = 
+          (1-sigmoid( sum(matX[i,]*betat_samplej) ))*                           # P(Sh > 0) with complete
+          dlogsknorm( y=Y[i],              
+                    x=matX[i,], 
+                    beta=beta_samplej, 
+                    sig2=sig_samplej, 
+                    xi=xi_samplej )*                              # to outcome with complete
+          dmvn(X = beta_samplej, mu = beta0, sigma = SIG_b0)*     # to joint beta
+          dinvgamma(x = sig_samplej, shape = a0, scale = b0)*     # to joint sig2
+          dt(x = xi_samplej, df = nu0)*                           # to joint xi
+          dmvn(X = betat_samplej, mu = betat0, sigma = SIG_bt0)   # to joint beta tilde
+      }
+      else {                                                                    # Y=1, when Sh=0
+        sumy[j] = 
+          (sigmoid( sum(matX[i,]*betat_samplej) ))*                             # P(Sh = 0) with complete
+          dmvn(X = betat_samplej, mu = betat0, sigma = SIG_bt0)   # to joint beta tilde
+      }
+
+      sumEy[j] = (1-sigmoid( sum(matX[i,]*betat_samplej) ))*
+        2*exp(sum(matX[i,]*beta_samplej+sig_samplej/2))*
+        (1-pnorm(-xi_samplej*sqrt(sig_samplej)/sqrt(xi_samplej^2+1)))
+      #print(sumEy)
+    }
+    f0y[i] = sum(sumy)/M # Outcome model w/o NA in X1
+    E0y[i] = sum(sumEy)/M # param-free E[Outcome] value model w/o NA in X1 
+  } 
+  
+  
+  
+  else if(is.na(X1[i])) { # ----------------------------------------------------- # [ When NA in X1 ] # 
+    f0x[i] = f0x2(X2[i])  #### Look at your covariate model #####
+    
+    # Monte Carlo integration for Y (with NA) ### outcome model ###
+    #sumy = numeric(M)
+    #sumEy = numeric(M)
+    for(j in 1:M) {
+      xi_samplej = rt(n = 1, df = nu0)                            # prior for xi
+      sig_samplej = rinvgamma(n = 1, shape = a0, scale = b0)      # prior for sig2
+      beta_samplej = rmvn(n = 1, mu = beta0, sigma = SIG_b0)      # prior for beta
+      betat_samplej = rmvn(n = 1, mu = betat0, sigma = SIG_bt0)   # prior on tilde beta
+      # In addition.....
+      pi_samplej = rbeta(n = 1, shape1 = c0, shape2 = d0)         # To integrate over the missing covariate!!!!
+      
+      if(Y[i]>1){    # Y>1, when Sh>0
+        sumy[j] = 
+          ( (1-sigmoid( sum(c(matX[i,1], 1, matX[i,3])*betat_samplej) ))*       # P(Sh > 0) with NA
+              dlogsknorm( y=Y[i],                                 
+                         x=c(matX[i,1], 1, matX[i,3]), 
+                         beta=beta_samplej, 
+                         sig2=sig_samplej, 
+                         xi=xi_samplej )*pi_samplej + 
+              (1-sigmoid( sum(c(matX[i,1], 0, matX[i,3])*betat_samplej) ))*
+              dlogsknorm( y=Y[i], 
+                          x=c(matX[i,1], 0, matX[i,3]), 
+                          beta=beta_samplej, 
+                          sig2=sig_samplej, 
+                          xi=xi_samplej)*(1 - pi_samplej) )*       # to outcome with NA
+          dmvn(X=beta_samplej, mu=beta0, sigma=SIG_b0)*            # to joint beta
+          dinvgamma(x=sig_samplej, shape=a0, scale=b0)*            # to joint sig2
+          dt(x=xi_samplej, df=nu0)*                                # to joint xi
+          dbeta(pi_samplej, shape1=c0, shape2=d0)*                 # to joint pi (for x1: NA)
+          dmvn(X=betat_samplej, mu=betat0, sigma=SIG_bt0)          # to joint beta tilde
+      }
+      else {
+        sumy[j] = 
+          ( (sigmoid( sum(c(matX[i,1], 1, matX[i,3])*betat_samplej) ))*         # P(Sh = 0) with NA
+              pi_samplej + 
+            (sigmoid( sum(c(matX[i,1], 0, matX[i,3])*betat_samplej) ))*
+              (1 - pi_samplej) )*                                               
+          dbeta(pi_samplej, shape1=c0, shape2=d0)*                 # to joint pi (for x1: NA)
+          dmvn(X = betat_samplej, mu = betat0, sigma = SIG_bt0)    # to joint beta tilde
+      }
+      
+      sumEy[j] = (1-sigmoid( sum(c(matX[i,1],0,matX[i,3])*betat_samplej) ))*
+        2*exp(sum(c(matX[i,1],0,matX[i,3])*beta_samplej+sig_samplej/2))*
+        (1-pnorm(-xi_samplej*sqrt(sig_samplej)/sqrt(xi_samplej^2+1)))*(1-pi_samplej) +
+        (1-sigmoid( sum(c(matX[i,1],1,matX[i,3])*betat_samplej) ))*
+        2*exp(sum(c(matX[i,1],1,matX[i,3])*beta_samplej+sig_samplej/2))*
+        (1-pnorm(-xi_samplej*sqrt(sig_samplej)/sqrt(xi_samplej^2+1)))*pi_samplej
+      #print(sumEy)  
+    }
+    f0y[i] = sum(sumy)/M  # param-free Outcome density model with NA in X1
+    E0y[i] = sum(sumEy)/M # param-free E[Outcome] value model with NA in X1 
+  }
+  
+  
+  
+  print(paste("i=",i))
+  #print(E0y)
+}
+
+plot( x=density(f0y) ) # param-free outcome density model by sampling param and plugging [obv, param] into "Monte Carlo Integration"
+plot( x=density(f0x) ) # param-free covariate density model by plugging [obv] into "posterior density" analytically produced
+plot( x=density(E0y) ) # param-free E[outcome] value model 
+
+boxplot(f0x ~ X1miss) # f0(X1,X2)
+# False: if x1 is not missing, the values of f0x (covariate model) are much smaller than the other case (True). 
+# This makes sense coz..u r not multiplying the density function of x1 (when x1 has NA, we drop x1..).
 
